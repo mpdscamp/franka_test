@@ -1,10 +1,12 @@
 #include "motion_generator.h"
 
-MotionGenerator::MotionGenerator(double speed_factor, const std::array<double, 7>& q_goal)
+MotionGenerator::MotionGenerator(double speed_factor, const std::array<double, 7>& q_goal,
+                                 const std::array<double, 7>& dq_max, const std::array<double, 7>& ddq_max_start,
+                                 const std::array<double, 7>& ddq_max_goal)
     : q_goal_(q_goal.data()) {
-    dq_max_ = (Eigen::Matrix<double, 7, 1>() << 2.0, 2.0, 2.0, 2.0, 2.5, 2.5, 2.5).finished() * speed_factor;
-    ddq_max_start_ = (Eigen::Matrix<double, 7, 1>() << 5, 5, 5, 5, 5, 5, 5).finished() * speed_factor;
-    ddq_max_goal_ = (Eigen::Matrix<double, 7, 1>() << 5, 5, 5, 5, 5, 5, 5).finished() * speed_factor;
+    dq_max_ = Eigen::Map<const Vector7d>(dq_max.data()) * speed_factor;
+    ddq_max_start_ = Eigen::Map<const Vector7d>(ddq_max_start.data()) * speed_factor;
+    ddq_max_goal_ = Eigen::Map<const Vector7d>(ddq_max_goal.data()) * speed_factor;
     dq_max_sync_.setZero();
     q_start_.setZero();
     delta_q_.setZero();
@@ -14,46 +16,97 @@ MotionGenerator::MotionGenerator(double speed_factor, const std::array<double, 7
     q_1_.setZero();
 }
 
-bool MotionGenerator::calculateDesiredValues(double t, Eigen::Matrix<double, 7, 1>* delta_q) const {
+bool MotionGenerator::calculateDesiredValues(double t, Vector7d* delta_q_d) const {
+    Vector7i sign_delta_q;
+    sign_delta_q << delta_q_.cwiseSign().cast<int>();
+    Vector7d t_d = t_2_sync_ - t_1_sync_;
+    Vector7d delta_t_2_sync = t_f_sync_ - t_2_sync_;
+    std::array<bool, 7> joint_motion_finished{};
+
     for (size_t i = 0; i < 7; i++) {
-        if (t < t_1_sync_[i]) {
-            (*delta_q)[i] = q_start_[i] + 0.5 * ddq_max_start_[i] * std::pow(t, 2);
-        } else if (t < t_2_sync_[i]) {
-            (*delta_q)[i] = q_1_[i] + dq_max_sync_[i] * (t - t_1_sync_[i]);
-        } else if (t <= t_f_sync_[i]) {
-            double t_decel = t - t_2_sync_[i];
-            (*delta_q)[i] = q_1_[i] + dq_max_sync_[i] * (t_2_sync_[i] - t_1_sync_[i]) + 
-                            dq_max_sync_[i] * t_decel - 0.5 * ddq_max_goal_[i] * std::pow(t_decel, 2);
+        if (std::abs(delta_q_[i]) < kDeltaQMotionFinished) {
+            (*delta_q_d)[i] = 0;
+            joint_motion_finished[i] = true;
         } else {
-            (*delta_q)[i] = q_goal_[i];
+            if (t < t_1_sync_[i]) {
+                (*delta_q_d)[i] = -1.0 / std::pow(t_1_sync_[i], 3.0) * dq_max_sync_[i] * sign_delta_q[i] *
+                                  (0.5 * t - t_1_sync_[i]) * std::pow(t, 3.0);
+            } else if (t >= t_1_sync_[i] && t < t_2_sync_[i]) {
+                (*delta_q_d)[i] = q_1_[i] + (t - t_1_sync_[i]) * dq_max_sync_[i] * sign_delta_q[i];
+            } else if (t >= t_2_sync_[i] && t < t_f_sync_[i]) {
+                (*delta_q_d)[i] =
+                    delta_q_[i] + 0.5 *
+                                  (1.0 / std::pow(delta_t_2_sync[i], 3.0) *
+                                       (t - t_1_sync_[i] - 2.0 * delta_t_2_sync[i] - t_d[i]) *
+                                       std::pow((t - t_1_sync_[i] - t_d[i]), 3.0) +
+                                   (2.0 * t - 2.0 * t_1_sync_[i] - delta_t_2_sync[i] - 2.0 * t_d[i])) *
+                                  dq_max_sync_[i] * sign_delta_q[i];
+            } else {
+                (*delta_q_d)[i] = delta_q_[i];
+                joint_motion_finished[i] = true;
+            }
         }
     }
-    return t >= t_f_sync_.maxCoeff();
+    return std::all_of(joint_motion_finished.cbegin(), joint_motion_finished.cend(), [](bool x) { return x; });
 }
 
 void MotionGenerator::calculateSynchronizedValues() {
-    Eigen::Matrix<double, 7, 1> t_f_new;
+    Vector7d dq_max_reach(dq_max_);
+    Vector7d t_f = Vector7d::Zero();
+    Vector7d delta_t_2 = Vector7d::Zero();
+    Vector7d t_1 = Vector7d::Zero();
+    Vector7d delta_t_2_sync = Vector7d::Zero();
+    Vector7i sign_delta_q;
+    sign_delta_q << delta_q_.cwiseSign().cast<int>();
+
     for (size_t i = 0; i < 7; i++) {
-        t_f_new[i] = std::abs(delta_q_[i] / dq_max_[i]);
+        if (std::abs(delta_q_[i]) > kDeltaQMotionFinished) {
+            if (std::abs(delta_q_[i]) < (3.0 / 4.0 * (std::pow(dq_max_[i], 2.0) / ddq_max_start_[i]) +
+                                         3.0 / 4.0 * (std::pow(dq_max_[i], 2.0) / ddq_max_goal_[i]))) {
+                dq_max_reach[i] = std::sqrt(4.0 / 3.0 * delta_q_[i] * sign_delta_q[i] *
+                                            (ddq_max_start_[i] * ddq_max_goal_[i]) /
+                                            (ddq_max_start_[i] + ddq_max_goal_[i]));
+            }
+            t_1[i] = 1.5 * dq_max_reach[i] / ddq_max_start_[i];
+            delta_t_2[i] = 1.5 * dq_max_reach[i] / ddq_max_goal_[i];
+            t_f[i] = t_1[i] / 2.0 + delta_t_2[i] / 2.0 + std::abs(delta_q_[i]) / dq_max_reach[i];
+        }
     }
-
-    double t_f_max = t_f_new.maxCoeff();
+    double max_t_f = t_f.maxCoeff();
     for (size_t i = 0; i < 7; i++) {
-        dq_max_sync_[i] = std::abs(delta_q_[i]) / t_f_max;
-        t_1_sync_[i] = dq_max_sync_[i] / ddq_max_start_[i];
-        t_2_sync_[i] = t_f_max - dq_max_sync_[i] / ddq_max_goal_[i];
-        t_f_sync_[i] = t_f_max;
-
-        q_1_[i] = q_start_[i] + 0.5 * ddq_max_start_[i] * std::pow(t_1_sync_[i], 2);
+        if (std::abs(delta_q_[i]) > kDeltaQMotionFinished) {
+            double a = 1.5 / 2.0 * (ddq_max_goal_[i] + ddq_max_start_[i]);
+            double b = -1.0 * max_t_f * ddq_max_goal_[i] * ddq_max_start_[i];
+            double c = std::abs(delta_q_[i]) * ddq_max_goal_[i] * ddq_max_start_[i];
+            double delta = b * b - 4.0 * a * c;
+            if (delta < 0.0) {
+                delta = 0.0;
+            }
+            dq_max_sync_[i] = (-1.0 * b - std::sqrt(delta)) / (2.0 * a);
+            t_1_sync_[i] = 1.5 * dq_max_sync_[i] / ddq_max_start_[i];
+            delta_t_2_sync[i] = 1.5 * dq_max_sync_[i] / ddq_max_goal_[i];
+            t_f_sync_[i] = (t_1_sync_)[i] / 2.0 + delta_t_2_sync[i] / 2.0 + std::abs(delta_q_[i] / dq_max_sync_[i]);
+            t_2_sync_[i] = (t_f_sync_)[i] - delta_t_2_sync[i];
+            q_1_[i] = (dq_max_sync_)[i] * sign_delta_q[i] * (0.5 * (t_1_sync_)[i]);
+        }
     }
 }
 
 franka::JointPositions MotionGenerator::operator()(const franka::RobotState& robot_state, franka::Duration period) {
     time_ += period.toSec();
-    Eigen::Matrix<double, 7, 1> delta_q;
-    bool motion_finished = calculateDesiredValues(time_, &delta_q);
 
-    std::array<double, 7> q_desired;
-    Eigen::VectorXd::Map(&q_desired[0], 7) = q_start_ + delta_q;
-    return motion_finished ? franka::MotionFinished(franka::JointPositions(q_desired)) : franka::JointPositions(q_desired);
+    if (time_ == 0.0) {
+        q_start_ = Vector7d(robot_state.q_d.data());
+        delta_q_ = q_goal_ - q_start_;
+        calculateSynchronizedValues();
+    }
+
+    Vector7d delta_q_d;
+    bool motion_finished = calculateDesiredValues(time_, &delta_q_d);
+
+    std::array<double, 7> joint_positions;
+    Eigen::VectorXd::Map(&joint_positions[0], 7) = (q_start_ + delta_q_d);
+    franka::JointPositions output(joint_positions);
+    output.motion_finished = motion_finished;
+    return output;
 }

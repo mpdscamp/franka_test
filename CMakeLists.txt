@@ -22,7 +22,7 @@ include_directories(
 )
 
 # Add the executable
-add_executable(main src/main.cpp src/franka_controller.cpp src/motion_generator.cpp src/robot_manager.cpp)
+add_executable(main src/main.cpp src/franka_controller.cpp src/motion_generator.cpp src/robot_manager.cpp src/robot_logger.cpp)
 
 # Link the libraries
 target_link_libraries(main Eigen3::Eigen Franka::Franka nlohmann_json::nlohmann_json pthread ${Boost_LIBRARIES} rt)
