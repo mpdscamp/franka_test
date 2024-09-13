@@ -1,0 +1,25 @@
+{
+  "robots": [
+    {
+      "robot_hostname": "192.168.4.100",
+      "start_pose": {
+        "position": [-0.278323, 0.805, 1.072819],
+        "orientation": [-0.876927, -0.123898, 0.464359, 0.0]
+      },
+      "end_pose": {
+        "position": [-0.278323, 0.805, 1.072819],
+        "orientation": [-0.876927, -0.123898, 0.464359, 0.0]
+      },
+      "speed_factor": 0.5,
+      "translational_stiffness": 100,
+      "rotational_stiffness": 30,
+      "delta_tau_max": 1.0,
+      "update_frequency": 1000.0,
+      "filter_params_nullspace_config": 0.1,
+      "filter_params_stiffness": 0.1,
+      "filter_params_pose": 0.1,
+      "filter_params_wrench": 0.1,
+      "damping_factors": [10.0, 10.0, 10.0, 2.0, 2.0, 2.0, 0.5]
+    }
+  ]
+}

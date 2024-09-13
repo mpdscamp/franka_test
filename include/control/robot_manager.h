@@ -15,7 +15,8 @@
 #include <unistd.h>
 #include <thread>
 #include <algorithm>
-#include "robot_logger.h"
+#include "utils/logger.h"
+#include "control/franka_controller.h"
 
 class RobotManager {
 public:
@@ -24,16 +25,12 @@ public:
 
 private:
     void loadConfig(const std::string& config_file);
-    // Update the function signature here to accept a vector of strings for peer message queue names
-    void createRobotProcess(const nlohmann::json& robot_params, const std::string& mq_name, const std::vector<std::string>& peer_mq_names);
-    void listenToMessages(const std::string& mq_name);
+    void createRobotProcess(const nlohmann::json& robot_parameters, const std::string& mq_name, int robot_id);
 
-    std::vector<nlohmann::json> robots_params_;
-    std::vector<std::string> mq_names_;
+    std::vector<nlohmann::json> robots_parameters_;
+    std::string central_mq_name_;  // Centralized message queue name
 
     bool running_ = true;
-
-    RobotLogger logger_;
 };
 
 #endif // ROBOT_MANAGER_H_
